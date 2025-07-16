@@ -1,0 +1,11 @@
+venv/
+venvIoT/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.git/
+.vscode/
+.idea/
+*.log
+*.tmp

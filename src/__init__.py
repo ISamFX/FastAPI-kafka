@@ -1,0 +1,1 @@
+print("src package initialized")  # Для проверки загрузки
