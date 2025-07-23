@@ -7,25 +7,20 @@ from confluent_kafka.admin import AdminClient, NewTopic
 from confluent_kafka.schema_registry import SchemaRegistryClient
 from confluent_kafka.schema_registry.avro import AvroSerializer
 import logging
-from ..config import Settings
+
+from ..config import get_kafka_config
+from ..producer import KafkaProducer
+from ..config import Settings, get_schema_registry_config
 import json
 from datetime import datetime
 
 logger = logging.getLogger("kafka-producer")
 
 class KafkaService:
-    def __init__(self):
-        """Инициализация сервиса Kafka с регистрацией схем"""
+    def __init__(self, producer=None):  
         self.settings = Settings()
-        self.producer = self._create_producer()
-        try:
-            self.schema_registry_client = self._create_schema_registry_client()
-        except Exception as e:
-            logger.warning(f"Schema Registry connection failed: {str(e)}")
-            self.schema_registry_client = None
-
-        logger.info("KafkaService initialized with config: %s", self._get_safe_config())
-        # self._register_schemas()  # временно отключено
+        self.producer = producer or self._create_producer()  # Используем переданный или создаем новый
+        self.schema_registry_client = self._create_schema_registry_client()
 
     def _get_safe_config(self):
         """Возвращает конфигурацию без чувствительных данных"""
@@ -49,29 +44,19 @@ class KafkaService:
         except Exception as e:
             logger.error(f"Failed to create Schema Registry client: {str(e)}")
             raise
+        
     def _create_producer(self):
         """Создает и настраивает Kafka Producer"""
         conf = {
-            'bootstrap.servers': 'broker1:19094,broker2:29094,broker3:39094', 
+            'bootstrap.servers': self.settings.KAFKA_BOOTSTRAP_SERVERS,
             'security.protocol': self.settings.KAFKA_SECURITY_PROTOCOL,
-            'sasl.mechanism': self.settings.KAFKA_SASL_MECHANISM, 
+            'sasl.mechanism': self.settings.KAFKA_SASL_MECHANISM,
             'sasl.username': self.settings.KAFKA_SASL_USERNAME,
             'sasl.password': self.settings.KAFKA_SASL_PASSWORD,
-            'session.timeout.ms': 60000,
-            'message.timeout.ms': 60000,
-            'socket.timeout.ms': 20000,
-            'request.timeout.ms': 25000,
-            'reconnect.backoff.max.ms': 10000,
-            'enable.idempotence': True
+            **self.settings.KAFKA_PRODUCER_CONFIG  # Добавляем все настройки продюсера
         }
+        return Producer(conf)
         
-        try:
-            producer = Producer(conf)
-            logger.info("Producer created successfully")
-            return producer
-        except Exception as e:
-            logger.error(f"Failed to create producer: {str(e)}")
-            raise RuntimeError(f"Producer creation failed: {str(e)}")
 
     def check_kafka_connection(self, timeout: float = 5.0) -> bool:
         """Проверяет подключение к Kafka брокерам"""
@@ -184,9 +169,27 @@ class KafkaService:
             raise
 
     def ensure_topics_exist(self, topics: list[str] = None) -> bool:
-        """Проверяет и создает указанные топики если их нет"""
         if topics is None:
-            topics = self.settings.KAFKA_REQUIRED_TOPICS
+            topics = ["iot.messages.binary", "iot.messages.json"]  # Новые топики
+        
+        topic_configs = {
+            'iot.messages.binary': {
+                'num_partitions': 3,
+                'replication_factor': 2,
+                'config': {
+                    'retention.ms': '604800000',  # 7 дней
+                    'min.insync.replicas': '2'
+                }
+            },
+            'iot.messages.json': {
+                'num_partitions': 3,
+                'replication_factor': 2,
+                'config': {
+                    'retention.ms': '604800000',
+                    'min.insync.replicas': '1'
+                }
+            }
+        }
         
         try:
             admin_conf = {
@@ -194,11 +197,14 @@ class KafkaService:
                 'security.protocol': self.settings.KAFKA_SECURITY_PROTOCOL,
                 'sasl.mechanism': self.settings.KAFKA_SASL_MECHANISM,
                 'sasl.username': self.settings.KAFKA_SASL_USERNAME,
-                'sasl.password': self.settings.KAFKA_SASL_PASSWORD
+                'sasl.password': self.settings.KAFKA_SASL_PASSWORD,
+                'request.timeout.ms': 30000
             }
             
             admin = AdminClient(admin_conf)
-            existing_topics = admin.list_topics(timeout=10).topics.keys()
+            
+            cluster_metadata = admin.list_topics(timeout=10)
+            existing_topics = cluster_metadata.topics
             missing_topics = [t for t in topics if t not in existing_topics]
             
             if not missing_topics:
@@ -206,27 +212,68 @@ class KafkaService:
                 return True
                 
             logger.info(f"Creating missing topics: {missing_topics}")
-            new_topics = [
-                NewTopic(
+            new_topics = []
+            for topic in missing_topics:
+                config = topic_configs.get(topic, {
+                    'num_partitions': 3,
+                    'replication_factor': 1,
+                    'config': {}
+                })
+                new_topics.append(NewTopic(
                     topic,
-                    num_partitions=self.settings.KAFKA_TOPIC_PARTITIONS,
-                    replication_factor=self.settings.KAFKA_TOPIC_REPLICATION
-                ) for topic in missing_topics
-            ]
+                    num_partitions=config['num_partitions'],
+                    replication_factor=config['replication_factor'],
+                    config=config['config']
+                ))
             
             fs = admin.create_topics(new_topics)
             for topic, f in fs.items():
                 try:
-                    f.result()
-                    logger.info(f"Topic {topic} created successfully")
+                    f.result(timeout=30)
+                    logger.info(f"Topic {topic} created successfully with config: {topic_configs.get(topic, 'default')}")
                 except Exception as e:
                     if "already exists" in str(e).lower():
-                        logger.info(f"Topic {topic} already exists (race condition)")
+                        logger.info(f"Topic {topic} already exists")
                     else:
                         logger.error(f"Failed to create topic {topic}: {e}")
-                        raise
+                        return False
                         
             return True
         except Exception as e:
             logger.error(f"Topic management error: {e}")
-            raise
+            return False
+        
+    async def produce_message(self, topic: str, value: dict) -> bool:
+        """Асинхронная отправка сообщения в Kafka
+        
+        Args:
+            topic: Название топика, в который отправляется сообщение
+            value: Словарь с данными сообщения
+            
+        Returns:
+            bool: True если сообщение успешно поставлено в очередь, False при ошибке
+        """
+        try:
+            # Проверяем, что producer существует
+            if not self.producer:
+                logger.error("Producer is not initialized")
+                return False
+                
+            # Сериализуем данные в JSON и отправляем
+            self.producer.produce(
+                topic=topic,
+                value=json.dumps(value).encode('utf-8'),
+                callback=self._delivery_callback
+            )
+            
+            # Обрабатываем события доставки
+            self.producer.poll(0)
+            logger.debug(f"Message queued for topic {topic}")
+            return True
+        
+        except BufferError as e:
+            logger.error(f"Producer queue is full (message not queued): {str(e)}")
+            return False
+        except Exception as e:
+            logger.error(f"Failed to produce message to topic {topic}: {str(e)}", exc_info=True)
+            return False

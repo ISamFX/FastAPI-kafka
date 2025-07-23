@@ -1,4 +1,3 @@
-from .v1 import v1_router
-from .v2 import v2_router
-
-__all__ = ["v1_router", "v2_router"]
+# src/Producer_api/app/routers/__init__.py
+from .messages_router import messages_router
+__all__ = ["messages_router"]

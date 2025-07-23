@@ -1,68 +1,79 @@
-from confluent_kafka import Consumer, KafkaException
-import time
+# src/consumer_mono/main.py
 
-def main():
-    # Конфигурация (аналог Java Properties)
-    config = {
-        # Подключение к Kafka
-        'bootstrap.servers': '127.0.0.1:19094,127.0.0.1:29094,127.0.0.1:39094',
-        
-        # Настройки безопасности (SASL/PLAIN)
-        'security.protocol': 'SASL_PLAINTEXT',
-        'sasl.mechanism': 'PLAIN',
-        'sasl.username': 'local_kafka_user',
-        'sasl.password': 'local_pass',
-        
-        # Группа потребителей
-        'group.id': 'new_group',
-        'group.instance.id': 'CONSUMER1',
-        
-        # Таймауты (как в Java)
-        'session.timeout.ms': 30000,
-        'heartbeat.interval.ms': 5000,
-        'max.poll.interval.ms': 30000,  # Увеличиваем значение до 30 секунд
-        
-        # Настройки чтения
-        'auto.offset.reset': 'earliest',  # читаем с начала
-        'enable.auto.commit': False,      # отключаем авто-коммит
-        'allow.auto.create.topics': False,  # запрещаем автосоздание топиков
-    }
+# src/Consumer_mono/main.py
 
-    # Создаём потребителя
-    consumer = Consumer(config)
+from confluent_kafka import Consumer, KafkaException, KafkaError
+import logging
+import signal
+import sys
+import json
+
+# Настройки логгирования
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s]: %(message)s',
+    datefmt='%Y-%m-%dT%H:%M:%S.%Z'
+)
+logger = logging.getLogger('KafkaConsumer')
+
+# Конфигурация консьюмера
+CONFIG = {
+    'bootstrap.servers': '127.0.0.1:19094,127.0.0.1:29094,127.0.0.1:39094',
+    'security.protocol': 'SASL_PLAINTEXT',
+    'sasl.mechanism': 'PLAIN',
+    'sasl.username': 'service_kafkasu_uk',
+    'sasl.password': 'test_kafka',
+    'group.id': 'mono_consumer_group',
+    'auto.offset.reset': 'earliest',
+    'enable.auto.commit': False,
+    'socket.timeout.ms': 30000
+}
+
+MONO_TOPIC = 'mono_topic_v1'
+
+def run_consumer():
+    logger.info("Initializing consumer...")
     
-    # Подписываемся на топик 'new_topic'
-    consumer.subscribe(['new_topic'])
+    # Инициализация консьюмера
+    consumer = Consumer(CONFIG)
+    consumer.subscribe([MONO_TOPIC])
+
+    # Обработка сигналов завершения
+    def shutdown(signum, frame):
+        logger.warning("Shutting down consumer...")
+        consumer.close()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, shutdown)
+    signal.signal(signal.SIGTERM, shutdown)
 
     try:
-        # Читаем сообщения (таймаут 10 секунд, как в Java)
-        messages = consumer.consume(num_messages=10000, timeout=10.0)
-        
-        if messages:
-            for msg in messages:
-                if msg.error():
-                    # Если ошибка (например, партиция удалена)
-                    print(f"Ошибка: {msg.error()}")
-                    continue
-                # Выводим значение сообщения, декодируя его в строку
-                print(msg.value().decode('utf-8'))
+        while True:
+            msg = consumer.poll(1.0)
             
-            print(f"Прочитано {len(messages)} сообщений")
-            
-            # Коммитим оффсеты (синхронно, как commitSync() в Java)
-            print("Коммитим оффсеты в Kafka...")
-            consumer.commit(asynchronous=False)
-            print("Оффсеты успешно закоммичены!")
-        else:
-            print("Нет новых сообщений для этой consumer-группы.")
-    
-    except KafkaException as e:
-        print(f"Ошибка Kafka: {e}")
+            if msg is None:
+                continue
+            if msg.error():
+                if msg.error().code() == KafkaError._PARTITION_EOF:
+                    logger.info(f"Reached end of partition {msg.partition()}")
+                else:
+                    logger.error(f"Consumer error: {msg.error()}")
+                continue
+
+            # Обработка сообщения
+            try:
+                message = json.loads(msg.value().decode('utf-8'))
+                logger.info(f"Received message: ID={message['id']}, Source={message['source']}, Payload={message['payload']}")
+                
+                # Подтверждение обработки сообщения
+                consumer.commit(asynchronous=False)
+                
+            except Exception as e:
+                logger.error(f"Error processing message: {e}")
+
     finally:
-        # Закрываем потребителя
         consumer.close()
-        print("Consumer закрыт.")
+        logger.info("Consumer closed")
 
-if __name__ == '__main__':
-    main()
-
+if __name__ == "__main__":
+    run_consumer()

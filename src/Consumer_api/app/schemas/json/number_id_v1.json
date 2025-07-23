@@ -1,0 +1,14 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "iot.number_id_v1.json",
+  "type": "object",
+  "properties": {
+    "id": {"type": "integer"},
+    "iot_id": {"type": "string", "format": "uuid"},
+    "crypto_id": {"type": "string", "format": "uuid"},
+    "message": {"type": "string"},
+    "timestamp": {"type": "string", "format": "date-time"},
+    "schema_id": {"type": "string", "const": "iot.number_id_v1.json"}
+  },
+  "required": ["id", "iot_id", "crypto_id", "message", "schema_id"]
+}

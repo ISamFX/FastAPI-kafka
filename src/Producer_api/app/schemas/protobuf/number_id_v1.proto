@@ -1,0 +1,9 @@
+syntax = "proto3";
+package iotcrypto.v1;
+
+message MessageV1 {
+  int32 id = 1;
+  string iot_id = 2;
+  string crypto_id = 3;
+  string message = 4;
+}

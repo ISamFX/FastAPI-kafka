@@ -1,0 +1,56 @@
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+name = "IoTcrupto"
+version = "0.1.0"
+description = "тесты kafka FastAPI "
+authors = ["Your Name <isam4fx@yandex.ru>"]
+
+[tool.poetry.dependencies]
+python = "^3.8"
+# Ваши зависимости
+
+[tool.poetry.dev-dependencies]
+pytest = "^7.0"
+pytest-cov = "^4.0"
+pytest-mock = "^3.10"
+requests = "^2.28"
+# Другие dev-зависимости
+
+[tool.pytest.ini_options]
+python_files = "test_*.py"
+testpaths = [
+    "src/Producer_api/tests",
+    "src/Consumer_api/app/tests"
+]
+addopts = [
+    "-v",
+    "--cov=src/Producer_api",
+    "--cov=src/Consumer_api/app",
+    "--cov-report=html"
+]
+markers = [
+    "producer: тесты для Producer API",
+    "consumer: тесты для Consumer API",
+    ]
+
+[tool.coverage.run]
+source = [
+    "src/Producer_api",
+    "src/Consumer_api/app"
+]
+omit = [
+    "**/tests/*",
+    "**/__pycache__/*"
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:"
+]
